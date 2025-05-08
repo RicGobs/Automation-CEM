@@ -132,10 +132,17 @@ def import_csv_files():
 
                 try:
                     with open(percorso_file, 'r', encoding='utf-8') as f:
-                        next(f)
+                        next(f)  # Salta la prima riga (header)
                         try:
                             cur.copy_from(f, 'tbl_italia_contributi', sep=';')
-                            conn.commit()
+                            conn.commit()  # Commit dopo l'importazione
+                            log_import(cur, schemas[i], nome_file)
+                            logging.info(f"[COMMIT] File {numero_file_processati} di {schemas[i]}: {nome_file} importato con successo.")
+                            
+                            # Cleanup: elimina il file dopo il commit
+                            logging.info(f"Rimuovendo il file {nome_file} dopo commit...")
+                            os.remove(percorso_file)
+
                         except Exception as e:
                             logging.error(f"Errore importando {nome_file}: {e}")
                             conn.rollback()
@@ -144,7 +151,6 @@ def import_csv_files():
                     logging.error(f"Errore aprendo {nome_file}: {e}")
                     raise
 
-                log_import(cur, schemas[i], nome_file)
                 durata = round((datetime.now() - orario_inizio).total_seconds(), 2)
                 logging.info(f"File {numero_file_processati} di {schemas[i]}: {nome_file} | Durata: {durata}s")
 
@@ -152,6 +158,7 @@ def import_csv_files():
 
     cur.close()
     conn.close()
+
 
 def verify_data():
     conn = psycopg2.connect(**conn_info)
