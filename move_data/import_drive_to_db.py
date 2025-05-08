@@ -62,10 +62,12 @@ def create_import_log_table(cur):
             id SERIAL PRIMARY KEY,
             schema_name TEXT,
             file_name TEXT,
+            file_length INT,  -- Nuova colonna per la lunghezza del file
             imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
     cur.connection.commit()
+
 
 def is_file_already_imported(cur, schema_name, file_name):
     cur.execute("""
@@ -74,11 +76,11 @@ def is_file_already_imported(cur, schema_name, file_name):
     """, (schema_name, file_name))
     return cur.fetchone() is not None
 
-def log_import(cur, schema_name, file_name):
+def log_import(cur, schema_name, file_name, file_length):
     cur.execute("""
-        INSERT INTO public.import_log_tbl_italia_contributi (schema_name, file_name)
-        VALUES (%s, %s)
-    """, (schema_name, file_name))
+        INSERT INTO public.import_log_tbl_italia_contributi (schema_name, file_name, file_length)
+        VALUES (%s, %s, %s)
+    """, (schema_name, file_name, file_length))
     cur.connection.commit()
 
 def download_files():
@@ -95,142 +97,140 @@ def download_files():
         gdown.download(url=urls[i], output=zip_path, fuzzy=True)
     logging.info("----------Download completato----------")
 
-def extract_archives():
-    for i in range(len(directories)):
-        folder_path = f"./{directories[i]}"
-        if os.path.exists(folder_path):
-            logging.info(f"[GIÀ PRESENTE] La directory {folder_path} esiste già.")
-            continue
-        logging.info(f"Decomprimendo {directories[i]}.7z...")
-        with py7zr.SevenZipFile(f'{directories[i]}.7z', mode='r') as archive:
-            archive.extractall(path=folder_path)
-    logging.info("----------Decompressione completata----------")
+def extract_archive(zip_file, folder_path):
+    if os.path.exists(folder_path):
+        logging.info(f"[GIÀ PRESENTE] La directory {folder_path} esiste già. Salto decompressione.")
+        return
+    logging.info(f"Decomprimendo {zip_file}...")
+    with py7zr.SevenZipFile(zip_file, mode='r') as archive:
+        archive.extractall(path=folder_path)
+    logging.info(f"Decompressione completata per {folder_path}.")
 
-def import_csv_files():
+def import_csv_files(schema, directory):
     conn = psycopg2.connect(**conn_info)
     cur = conn.cursor()
     create_import_log_table(cur)
 
-    for i in range(len(schemas)):
-        numero_file_processati = 0
-        cartella_csv = f'./{directories[i]}'
-        try:
-            cur.execute(f'SET search_path TO {schemas[i]};')
-            logging.info(f"----------Import di {schemas[i]} avviato----------")
-        except Exception as e:
-            logging.error(f"Errore nel settare lo schema {schemas[i]}: {e}")
-            raise
+    numero_file_processati = 0
+    cartella_csv = f'./{directory}'
+    try:
+        cur.execute(f'SET search_path TO {schema};')
+        logging.info(f"----------Import di {schema} avviato----------")
+    except Exception as e:
+        logging.error(f"Errore nel settare lo schema {schema}: {e}")
+        raise
 
-        for nome_file in os.listdir(cartella_csv):
-            if nome_file.endswith('COPERTURA_DB.CSV'):
-                if is_file_already_imported(cur, schemas[i], nome_file):
-                    logging.info(f"[SKIPPATO] {nome_file} già importato in {schemas[i]}.")
-                    continue
-                numero_file_processati += 1
-                percorso_file = os.path.join(cartella_csv, nome_file)
-                orario_inizio = datetime.now()
+    for nome_file in os.listdir(cartella_csv):
+        if nome_file.endswith('COPERTURA_DB.CSV'):
+            if is_file_already_imported(cur, schema, nome_file):
+                logging.info(f"[SKIPPATO] {nome_file} già importato in {schema}.")
+                continue
+            numero_file_processati += 1
+            percorso_file = os.path.join(cartella_csv, nome_file)
+            orario_inizio = datetime.now()
 
-                try:
-                    with open(percorso_file, 'r', encoding='utf-8') as f:
-                        next(f)  # Salta la prima riga (header)
-                        try:
-                            cur.copy_from(f, 'tbl_italia_contributi', sep=';')
-                            conn.commit()  # Commit dopo l'importazione
-                            log_import(cur, schemas[i], nome_file)
-                            logging.info(f"[COMMIT] File {numero_file_processati} di {schemas[i]}: {nome_file} importato con successo.")
-                            
-                            # Cleanup: elimina il file dopo il commit
-                            logging.info(f"Rimuovendo il file {nome_file} dopo commit...")
-                            os.remove(percorso_file)
+            try:
+                # Calcoliamo la lunghezza del file (numero di righe)
+                row_count = 0
+                with open(percorso_file, 'r', encoding='utf-8') as f:
+                    next(f)  # Salta la prima riga (header)
+                    row_count = sum(1 for line in f)
 
-                        except Exception as e:
-                            logging.error(f"Errore importando {nome_file}: {e}")
-                            conn.rollback()
-                            raise
-                except Exception as e:
-                    logging.error(f"Errore aprendo {nome_file}: {e}")
-                    raise
+                with open(percorso_file, 'r', encoding='utf-8') as f:
+                    next(f)  # Salta la prima riga (header)
+                    try:
+                        cur.copy_from(f, 'tbl_italia_contributi', sep=';')
+                        conn.commit()  # Commit dopo l'importazione
+                        log_import(cur, schema, nome_file, row_count)  # Log con lunghezza
+                        logging.info(f"[COMMIT] File {numero_file_processati} di {schema}: {nome_file} importato con successo.")
+                    except Exception as e:
+                        logging.error(f"Errore importando {nome_file}: {e}")
+                        conn.rollback()
+                        raise
+            except Exception as e:
+                logging.error(f"Errore aprendo {nome_file}: {e}")
+                raise
 
-                durata = round((datetime.now() - orario_inizio).total_seconds(), 2)
-                logging.info(f"File {numero_file_processati} di {schemas[i]}: {nome_file} | Durata: {durata}s")
+            durata = round((datetime.now() - orario_inizio).total_seconds(), 2)
+            logging.info(f"File {numero_file_processati} di {schema}: {nome_file} | Durata: {durata}s")
 
-        logging.info(f"----------Import di {schemas[i]} completato----------")
+    logging.info(f"----------Import di {schema} completato----------")
 
     cur.close()
     conn.close()
 
 
-def verify_data():
-    conn = psycopg2.connect(**conn_info)
-    cur = conn.cursor()
-    logging.info("----------Verifica dei dati importati----------")
-    for schema in schemas:
-        try:
-            cur.execute(f"SELECT * FROM {schema}.tbl_italia_contributi LIMIT 3;")
-            rows = cur.fetchall()
-            logging.info(f"\nPrime 3 righe dello schema {schema}:")
-            for row in rows:
-                logging.info(row)
-        except Exception as e:
-            logging.error(f"Errore leggendo i dati da {schema}: {e}")
-            raise
-    cur.close()
-    conn.close()
-
-def verify_import():
+def verify_import(schema, directory):
     conn = psycopg2.connect(**conn_info)
     cur = conn.cursor()
     logging.info("----------Verifica consistenza righe----------")
-    for i in range(len(schemas)):
-        total_rows_csv = 0
-        cartella_csv = f'./{directories[i]}'
+    total_rows_csv = 0
+    cartella_csv = f'./{directory}'
 
-        try:
-            for nome_file in os.listdir(cartella_csv):
-                if nome_file.endswith('COPERTURA_DB.CSV'):
-                    with open(os.path.join(cartella_csv, nome_file), 'r', encoding='utf-8') as f:
-                        row_count = sum(1 for line in f) - 1
-                        total_rows_csv += row_count
-        except Exception as e:
-            logging.error(f"Errore nel conteggio righe dei CSV per {directories[i]}: {e}")
-            raise
+    try:
+        for nome_file in os.listdir(cartella_csv):
+            if nome_file.endswith('COPERTURA_DB.CSV'):
+                with open(os.path.join(cartella_csv, nome_file), 'r', encoding='utf-8') as f:
+                    row_count = sum(1 for line in f) - 1
+                    total_rows_csv += row_count
+    except Exception as e:
+        logging.error(f"Errore nel conteggio righe dei CSV per {directory}: {e}")
+        raise
 
-        try:
-            cur.execute(f"SELECT COUNT(*) FROM {schemas[i]}.tbl_italia_contributi;")
-            total_rows_db = cur.fetchone()[0]
-        except Exception as e:
-            logging.error(f"Errore nel conteggio righe del DB per {schemas[i]}: {e}")
-            raise
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM {schema}.tbl_italia_contributi;")
+        total_rows_db = cur.fetchone()[0]
+    except Exception as e:
+        logging.error(f"Errore nel conteggio righe del DB per {schema}: {e}")
+        raise
 
-        if total_rows_csv == total_rows_db:
-            logging.info(f"[OK] {schemas[i]}: {total_rows_csv} righe importate correttamente.")
-        else:
-            msg = f"[ERRORE] {schemas[i]}: {total_rows_csv} nei CSV vs {total_rows_db} nel DB."
-            logging.error(msg)
-            raise ValueError(msg)
+    if total_rows_csv == total_rows_db:
+        logging.info(f"[OK] {schema}: {total_rows_csv} righe importate correttamente.")
+    else:
+        msg = f"[ERRORE] {schema}: {total_rows_csv} nei CSV vs {total_rows_db} nel DB."
+        logging.error(msg)
+        raise ValueError(msg)
 
     cur.close()
     conn.close()
 
-def cleanup():
-    for directory in directories:
-        if os.path.exists(directory):
-            logging.info(f"Rimuovendo la cartella {directory}...")
-            os.system(f"rm -rf '{directory}'")
-    for directory in directories:
-        zip_file = f"{directory}.7z"
+def cleanup_zip_file(zip_file, folder_path):
+    try:
+        # Remove the folder after processing it
+        if os.path.exists(folder_path):
+            logging.info(f"Rimuovendo la cartella {folder_path} dopo l'importazione e la verifica...")
+            os.system(f"rm -rf '{folder_path}'")
+
+        # Remove the ZIP file after processing it
         if os.path.exists(zip_file):
-            logging.info(f"Rimuovendo il file {zip_file}...")
+            logging.info(f"Rimuovendo il file ZIP {zip_file} dopo l'estrazione...")
             os.remove(zip_file)
+
+    except Exception as e:
+        logging.error(f"Errore durante la pulizia del file {zip_file} e della cartella {folder_path}: {e}")
+        raise
 
 def main():
     try:
         download_files()
-        extract_archives()
-        import_csv_files()
-        # verify_data()
-        verify_import()
-        # cleanup()
+        # Itera sui singoli operatori
+        for i in range(len(directories)):
+            zip_file = f"{directories[i]}.7z"
+            folder_path = directories[i]
+            schema = schemas[i]
+            
+            # Step 1: Scarica e decomprimi i file ZIP
+            extract_archive(zip_file, folder_path)
+
+            # Step 2: Importa i CSV per lo schema e la directory associata
+            import_csv_files(schema, folder_path)
+
+            # Step 3: Verifica l'import per assicurare l'integrità dei dati
+            verify_import(schema, folder_path)
+
+            # Step 4: Cleanup del file ZIP e della cartella estratta
+            cleanup_zip_file(zip_file, folder_path)
+            
     except Exception as e:
         logging.error(f"Errore durante l'esecuzione dello script: {e}")
         raise
