@@ -103,7 +103,7 @@ def extract_archives():
             continue
         logging.info(f"Decomprimendo {directories[i]}.7z...")
         with py7zr.SevenZipFile(f'{directories[i]}.7z', mode='r') as archive:
-            archive.extractall(path='./')
+            archive.extractall(path=folder_path)
     logging.info("----------Decompressione completata----------")
 
 def import_csv_files():
