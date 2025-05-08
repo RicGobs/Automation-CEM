@@ -1,0 +1,6 @@
+# Config file
+config.json
+
+# Dati da non tracciare
+move_data/*.7z
+move_data/*/

@@ -1,0 +1,5 @@
+TRUNCATE TABLE map_iliad10km.tbl_italia_contributi;
+TRUNCATE TABLE map_tim10km.tbl_italia_contributi;
+TRUNCATE TABLE map_vodafone10km.tbl_italia_contributi;
+TRUNCATE TABLE map_windtre10km.tbl_italia_contributi;
+TRUNCATE TABLE import_log_tbl_italia_contributi;

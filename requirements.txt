@@ -1,0 +1,3 @@
+gdown
+psycopg2-binary
+py7zr
